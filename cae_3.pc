@@ -1,0 +1,1642 @@
+/******************************************************************************
+ $Id$
+
+ Claro S.A. - Todos los derechos reservados.
+ Copyright (c) 2005-2019
+
+ Prohibida la distribucion, reproduccion, copia o impresion
+ de este codigo fuente sin la autorizacion escrita de
+ Claro S.A..
+
+*******************************************************************************/
+
+/******************************************************************************/
+/* DEFINE                                                                     */
+/******************************************************************************/
+#define TIPO_REG_0    0
+#define TIPO_REG_1    1
+#define TIPO_REG_3    3 
+#define TIPO_REG_4    4
+#define TIPO_REG_7    7  
+#define DESCRIP_SERVIC "FACTURA ELECTRONICA" 
+#define FACTURA_A     "01"
+#define DOC_LETTER_A  "A"
+#define CUIT          "80"
+#define CONCEPT_TYPE  "03"
+
+#define CONS_FINAL  "05"
+#define SIN_IDENT   "99"
+#define FACTURA     "FC"
+
+#define MAX         1000
+#define LINE_SIZE   262
+ 
+#define SIZE 400 
+#define ROWS 10000
+
+#define ProgramName "fce_request_cae_number_wsv1"
+
+/* TRIBUTOS */
+#define IMPUESTOS_NACIONALES    1  
+#define IMPUESTOS_PROVINCIALES  2
+#define IMPUESTOS_MUNICIPALES   3  
+#define IMPUESTOS_INTERNOS      4 
+
+/******************************************************************************/
+/* INCLUDE'S                                                                  */
+/******************************************************************************/
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <math.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <ora_util.h>
+ 
+EXEC SQL include SQLCA.h;
+EXEC SQL include ORACA.h;
+EXEC SQL include SQLCPR.h;
+
+/******************************************************************************/
+/* DECLARACION DE PROTOTIPOS                                                  */
+/******************************************************************************/
+
+int  debug = 0;
+
+/* Archivos  */
+FILE* datafile = NULL;
+char filename[512];
+FILE* statisticfile = NULL;  
+char filename_statisticfile[512];
+FILE* logdatafile = NULL;
+char filename_log[512];
+
+char line[SIZE];
+char PuntoVenta[6];
+char CodCTIGire[4];
+char PrefijoArchivo[4];
+char SecIdFCA[4]; 
+char pacts [MAX][25];
+char vats  [MAX][25];
+char stImprod  [MAX][25];
+int  cant_vat=0, cant_pac = 0, cant_improd = 0;
+int  flag_bad_registros = 0; /* Esta flag nos indica que hubo un error critico y tenemos que volver a generar el archivo */
+char CuitGenerico[16];
+double umbralFCB=0.0;
+
+/* Fechas de inicio y fin de corte */
+char SchStartDate[10];
+char SchEndDate[10];
+double MinSchId=0.0;
+double MaxSchId=0.0;
+char workPath[256];
+
+typedef struct s_fce_cae_number
+{
+  char   dcn_doc_document_date[10];
+  char   dvl_code[4];
+  char   dcn_doc_id[15];
+  char   doc_id[15];
+  char   clt_cuit[16];
+  char   clt_identification_type[4];
+  char   clt_ident_number[15];
+  double dcn_doc_amount;
+  double ImpNoGravado;
+  double ImpMontoNeto;
+  double ImpMontoIva;
+  double dod_percent;
+  double dod_percent_vat;
+  int    iva_code;
+  double ImpExento;
+  double ImpMontoRni;
+  double ImpPercepIVA;
+  double ImpPercepIIBB;
+  double ImpPercepMunicip;
+  double ImpImint;
+  double ImpProd;
+  char   vat_code[4];
+  char   Moneda[4];
+  int    TipoCambio;     
+  char   dcn_doc_due_date[10];
+  int    dcn_doc_cmp_id;
+  char   dcn_doc_letter[2];
+  char   dcn_doc_dct_id[4];
+  char   dcn_acc_id[11];
+  char   clt_id[15];
+  int    record_type;
+} fce_cae_number;
+
+void DBConnect(void);
+void DatosDefault(char *year_month_day, char *fecha_generacion ,int CmpId, const char *program, char *letter);
+void DatosCia(char *year_month_day, int CmpId, char *CmpCuit, char *CmpName, const char *program);
+void Imprimo_Cabecera(char *CmpCuit,char *CmpName, char *fecha_generacion,char *PuntoVenta);
+void Imprimo_Totales(int TotCantReg, char *CmpCuit,double TotImporteTotal, double TotImporteNoGravado, double TotImporteNetoGravado,double TotImporteIva,double TotImporteRni, double TotImporteExento,double TotImportePercepIVA,double TotImportePercepIIBB,double TotImportePercepMunicip,double TotImporteImpInterno, double TotImporteImpProducto);
+int  Load_PercepcionesIIBB(char *year_month_day);
+int  Load_IVAadicional(char *year_month_day);
+int  Load_ImpIntProd (char *year_month_day);
+void Actualizar_Estados(char *DocId, char *DocLetter, char *DocDctId, int DocCmpId, char *DcnStatus);
+void Arma_Cursor (char *cursor, int cant_vat, int cant_pac, int cant_improd, char *year_month_day, char *DcnStatus, char *letter,int CmpId);
+void show_help(const char *program);
+static void AbortaPrograma(void);
+
+int main (int argc, char *argv[])
+{
+  char cursor[40000];
+  int  flag_warning_registros = 0; /* Esta flag nos indica que hubo un error pero se genera un archivo valido */
+  char CmpCuit[16];
+  char CmpName[51];
+  char fecha_generacion[10];
+
+  /* optarg */
+  int  CmpId = 0;
+  char year_month_day[10];
+  char letter[2];
+  char DcnStatus_Reproceso[10];
+  int  noparallel = 0;
+  int reproceso_flag = 0; /* Esta flag se utiliza para el reproceso de datos */
+  int year_month_day_flag = 0;  /* Esta flag nos indica si se paso el parametro yyyymmdd */
+  int letter_flag = 0; /* esta flag nos indica si se paso el parametro letra */
+  int CmpId_flag = 0; /* Esta flag nos indica si se paso la cia como parametro */
+  int arg = 0;
+  int sequence_flag = 0; /* Esta flag nos indica si se le paso la secuencia por parametro */
+  long DocId_Ant = 0;
+
+  /* Contador */
+  int i = 0;
+  int loopeo = 1;
+  int rows_to_fetch = 0;
+  int rows_before = 0;
+  int rows_this_time = 0;
+
+  /* Variables Totales */
+  int     TotCantReg            = 0;
+  double  TotImporteTotal       = 0.0;
+  double  TotImporteNoGravado   = 0.0;
+  double  TotImporteNetoGravado = 0.0;
+  double  TotImporteIva         = 0.0;
+  double  TotImporteRni         = 0.0;
+  double  TotImporteExento      = 0.0;
+  double  TotImportePercepIVA   = 0.0;
+  double  TotImportePercepIIBB  = 0.0;
+  double  TotImportePercepMunicip  = 0.0;
+  double  TotImporteImpInterno  = 0.0;
+  double  TotImporteImpProducto = 0.0;
+
+  EXEC ORACLE OPTION(ORACA=YES);
+
+  oraca.oradbgf  = 1;
+  oraca.oracchf  = 1;
+  oraca.orastxtf = 3;
+  
+  fce_cae_number FceCaeNumber[ROWS];
+
+  int  procesados = 0;
+  int  flag_cabecera = 0;
+  char sequence[4]; 
+  
+  double aux_sum = 0;
+  int    seq_num_tributo = 0;
+  int    seq_num_iva = 0;
+  int    det_printed = 0;
+
+  EXEC SQL WHENEVER SQLERROR DO AbortaPrograma(void);
+
+  memset(year_month_day,NULL,sizeof(year_month_day));
+  memset(letter,NULL,sizeof(letter));
+  memset(sequence, NULL, sizeof(sequence)); 
+  CmpId = 0;
+  memset(DcnStatus_Reproceso, NULL ,sizeof(DcnStatus_Reproceso));
+
+  strcpy(DcnStatus_Reproceso,"NP");
+ 
+  /* chequea los argumentos */
+  while ((arg = getopt(argc, argv, "C:c:L:l:Y:y:HhDdS:s:R:r:Xx")) != -1)
+    switch (arg)
+    {
+      case 'C': case 'c':
+        CmpId=atoi(optarg);
+        CmpId_flag++;
+        break;
+      case 'L': case 'l':
+        strcpy(letter,optarg);
+        if (strcmp(optarg,"A") && strcmp(optarg,"B")){
+          fprintf(stdout,"Proceso %s Finalizado con Errores\n", ProgramName);
+          fprintf(stderr, "La letra debe ser A (mayuscula) o B (mayuscula)\n");
+          exit(1);
+        }
+        letter_flag++;
+        break;  
+      case 'Y': case 'y':
+        strcpy(year_month_day, optarg);
+        year_month_day_flag++;
+        break;
+      case 'H': case 'h':
+        show_help(ProgramName);
+        break;
+      case 'D': case 'd':
+        debug++;
+        break;
+      case 'S': case 's':
+        strcpy(sequence,optarg); 
+        sequence_flag++;
+        break;
+      case 'R': case 'r':
+        strcpy(DcnStatus_Reproceso,optarg);
+        if (strcmp(optarg,"EA")){
+          fprintf(stdout,"Proceso %s Finalizado con Errores\n", ProgramName);
+          fprintf(stderr, "Para el reproceso del archivo el VALOR del PARAMETRO -r DEBE SER --> [ EA ]. Usted ingreso: [%s]\n", DcnStatus_Reproceso);
+          exit(1);
+        }
+        reproceso_flag++;
+        break;
+      case 'X': case 'x': 
+        noparallel++;
+        break;
+      case ':':
+        fprintf(stdout,"Proceso %s Finalizado con Errores\n", ProgramName);
+        fprintf(stderr, "%s: Opcion -%c requiere un argumento\n", ProgramName, optopt);
+        exit(1);
+        break;
+      case '?':
+        fprintf(stdout,"Proceso %s Finalizado con Errores\n", ProgramName);
+        fprintf(stderr, "%s: Opcion no reconocida: -%c\n", ProgramName, optopt);
+        exit(1);
+        break;
+    }
+
+  if (!letter_flag || !year_month_day_flag || !CmpId_flag)
+  {
+    show_help(ProgramName);
+  }
+    
+  if (debug)
+    fprintf(stderr, "%s: -c [%d] -l [%s] -y [%s] -s [%s] -r [%s] \n", ProgramName, CmpId,letter ,year_month_day, sequence, DcnStatus_Reproceso);
+
+  DBConnect();
+ 
+  if(noparallel == 0) 
+    EXEC SQL ALTER SESSION SET PARALLEL_MIN_PERCENT = 100;
+        
+  EXEC SQL alter session set sort_area_size=200000000;
+
+  if (sqlca.sqlcode)
+    fprintf (stderr,"HASH_AREA_SIZE code:%d\n", sqlca.sqlcode);
+
+  DatosDefault(year_month_day, fecha_generacion, CmpId, ProgramName, letter); /* Leo datos por default */
+ 
+  DatosCia(year_month_day, CmpId, CmpCuit, CmpName, ProgramName);
+ 
+  if ( sequence_flag )
+    strcpy(SecIdFCA, sequence);
+
+  if (debug)
+    fprintf(stderr, "Fecha de Generacion del Archivo: %s\n", fecha_generacion);
+
+  sprintf(filename_log, "%s%-3.3s_CAE_V1_%-11.11s_FC%-1.1s%-5.5s%-8.8s%-3.3s.%-3.3s.lis",workPath,PrefijoArchivo,CmpCuit,letter,PuntoVenta,fecha_generacion,SecIdFCA,CodCTIGire);
+
+  if (debug)
+     fprintf(stderr, "%s: Archivo %s\n", ProgramName, filename_log);
+
+  if (NULL == (logdatafile = fopen(filename_log, "w+")))
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n", ProgramName);
+    fprintf(stderr, "No se pudo crear el archivo %s: %s \n", ProgramName, filename_log);
+    exit(1);
+  }
+
+  sprintf(filename, "%s%-3.3s_CAE_V1_%-11.11s_FC%-1.1s%-5.5s%-8.8s%-3.3s.%-3.3s",workPath,PrefijoArchivo,CmpCuit,letter,PuntoVenta,fecha_generacion,SecIdFCA,CodCTIGire);
+
+  if (debug)
+    fprintf(stderr, "%s: Archivo %s\n", ProgramName, filename);
+
+  if (NULL == (datafile = fopen(filename, "w+")))
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n", ProgramName);
+    fprintf(stderr, "No se pudo crear el archivo %s: %s \n", ProgramName, filename);
+    exit(1);
+  }
+
+  sprintf(filename_statisticfile, "%s%-3.3s_CAE_V1_%-11.11s_FC%-1.1s%-5.5s%-8.8s%-3.3s.%-3.3s.rep",workPath,PrefijoArchivo,CmpCuit,letter,PuntoVenta,fecha_generacion,SecIdFCA,CodCTIGire);
+
+  if (debug)
+     fprintf(stderr, "%s: Archivo %s\n", ProgramName, filename_statisticfile);
+
+  if (NULL == (statisticfile = fopen(filename_statisticfile, "w+")))
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n", ProgramName);
+    fprintf(stderr, "No se pudo crear el archivo %s: %s \n", ProgramName, filename_statisticfile);
+    exit(1);
+  }
+
+  cant_vat = Load_IVAadicional(year_month_day);
+  cant_pac = Load_PercepcionesIIBB(year_month_day); 
+  cant_improd = Load_ImpIntProd(year_month_day);
+
+  Arma_Cursor (cursor, cant_vat, cant_pac, cant_improd, year_month_day, DcnStatus_Reproceso, letter, CmpId);
+  
+  EXEC SQL PREPARE prepared_cursor from :cursor;
+  EXEC SQL DECLARE c_registros cursor FOR prepared_cursor;
+  EXEC SQL OPEN c_registros;
+ 
+  if (sqlca.sqlcode)
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n", ProgramName);
+    fprintf(stderr,"Errorrr %d al Abrir el Cursor c_registros\n",sqlca.sqlcode);
+    exit (1);  
+  }
+
+  TotImporteTotal          = 0.0;
+  TotImporteNoGravado      = 0.0;
+  TotImporteNetoGravado    = 0.0;
+  TotImporteIva            = 0.0;
+  TotImporteRni            = 0.0;
+  TotImporteExento         = 0.0;
+  TotImportePercepIVA      = 0.0;
+  TotImportePercepIIBB     = 0.0;
+  TotImportePercepMunicip  = 0.0;
+  TotImporteImpInterno     = 0.0;
+  TotImporteImpProducto    = 0.0;
+
+  rows_to_fetch = ROWS;
+  rows_before = 0;
+  rows_this_time = ROWS;
+  loopeo = 1;
+  procesados = 0;
+  flag_cabecera = 1;
+  flag_bad_registros = 0;
+  flag_warning_registros = 0; 
+
+  while (loopeo)
+  {
+    memset(&FceCaeNumber, NULL, sizeof(fce_cae_number)*ROWS);
+
+    EXEC SQL FOR :rows_to_fetch
+           FETCH c_registros
+            INTO FceCaeNumber;
+
+    loopeo = !sqlca.sqlcode;
+    rows_this_time = sqlca.sqlerrd[2] - rows_before;
+    rows_before = sqlca.sqlerrd[2];
+
+    if (debug)
+      fprintf(stderr, "%s: Fetch %d Total %d SqlCode: %d\n", ProgramName, rows_this_time, sqlca.sqlerrd[2],sqlca.sqlcode);
+
+    i = 0;
+ 
+    while (i < rows_this_time)
+    {
+      if (flag_cabecera)
+      {
+        Imprimo_Cabecera(CmpCuit,CmpName, fecha_generacion,PuntoVenta);
+        flag_cabecera=0;  
+      }
+      
+      if(FceCaeNumber[i].record_type == 1)
+      {
+        /* Se inicializan variables de secuencias de alicuota de iva y otros tributos */
+        seq_num_tributo = 1;
+        seq_num_iva = 1;
+        
+        if(strcmp(letter,DOC_LETTER_A) == 0) /* Facturas A */
+        {
+              /* Se verifica que efectivamente un documento letra A tenga cargado el codigo 01 */
+              if (strcmp(FceCaeNumber[i].dvl_code,FACTURA_A) && !strcmp(FceCaeNumber[i].dcn_doc_letter,DOC_LETTER_A))
+              {
+                    fprintf(logdatafile,"Registro Detalle - En una factura A esta CARGADO INCORRECTO el TIPO DE COMPROBANTE SEGUN LA TABLA DE LA AFIP!!! Cuenta: %s Tipo de Comprobante: %s DocId: %s DocCmpId: %d DocLetter: %s DocDctId: %s\n\n", FceCaeNumber[i].dcn_acc_id, FceCaeNumber[i].dvl_code, FceCaeNumber[i].doc_id, FceCaeNumber[i].dcn_doc_cmp_id, FceCaeNumber[i].dcn_doc_letter, FceCaeNumber[i].dcn_doc_dct_id);
+                    flag_bad_registros++;
+              }
+              strcpy(FceCaeNumber[i].clt_identification_type, CUIT);
+
+              /* Se verifica que TODOS los comprobantes A tengan el CUIT cargado. Si esta mal cargado el CUIT queda en el archivo de log el CUIT incorrecto y se pisa el CUIT del cliente por un CUIT generico */  
+              if (!strcmp(FceCaeNumber[i].dcn_doc_letter,DOC_LETTER_A) && (strlen(FceCaeNumber[i].clt_cuit)!= 11 ||
+                             (FceCaeNumber[i].clt_cuit[0] != '2' && FceCaeNumber[i].clt_cuit[0] != '3' && FceCaeNumber[i].clt_cuit[0] != '5')))
+              {
+                    fprintf(logdatafile,"Registro Detalle - CUIT INVALIDO!!! CUIT: %s Length: %d Cliente: %s Cuenta: %s DocId: %s DocCmpId: %d DocLetter: %s DocDctId: %s\n\n", FceCaeNumber[i].clt_cuit, strlen(FceCaeNumber[i].clt_cuit) ,FceCaeNumber[i].clt_id, FceCaeNumber[i].dcn_acc_id, FceCaeNumber[i].doc_id, FceCaeNumber[i].dcn_doc_cmp_id, FceCaeNumber[i].dcn_doc_letter, FceCaeNumber[i].dcn_doc_dct_id);
+                    strcpy(FceCaeNumber[i].clt_cuit,CuitGenerico); /* CUIT GENERICO*/
+                    flag_warning_registros++;
+              }
+        }
+        else /* Facturas B */
+        {
+              /* Para Facturas B de menos de x monto no de informa comprador */          
+              if(FceCaeNumber[i].dcn_doc_amount < umbralFCB){
+                    strcpy(FceCaeNumber[i].clt_identification_type, SIN_IDENT);
+                    strcpy(FceCaeNumber[i].clt_cuit, "00000000000");
+                    strcpy(FceCaeNumber[i].clt_ident_number, "00000000000"); 
+              }
+              else {
+                    /* El cliente tiene identifacion */
+                    if (strcmp(FceCaeNumber[i].clt_identification_type, SIN_IDENT))
+                    {
+                          /* Si tiene CUIT y Nro de Documento prevalece el nro. de CUIT */
+                          if(strcmp(FceCaeNumber[i].clt_cuit,"00000000000") )
+                          {
+                                /* Si el cliente es Consumidor Final y tiene nro. de CUIT y nro. de documento de ident
+                                   se muestra el nro. del documento de identidad */
+                                if (!strcmp(FceCaeNumber[i].vat_code, CONS_FINAL) && strcmp(FceCaeNumber[i].clt_ident_number,"00000000000")) 
+                                {
+                                    strcpy(FceCaeNumber[i].clt_cuit,FceCaeNumber[i].clt_ident_number);
+                                }
+                                else {
+                                      strcpy(FceCaeNumber[i].clt_identification_type, CUIT);
+                                      /* Se verifica si esta mal cargado el CUIT queda en el archivo de log el CUIT incorrecto y se pisa el CUIT del cliente por un CUIT generico */
+                                      if ( (strlen(FceCaeNumber[i].clt_cuit)!= 11 || (FceCaeNumber[i].clt_cuit[0]!='2' && FceCaeNumber[i].clt_cuit[0]!='3' && FceCaeNumber[i].clt_cuit[0]!='5')))
+                                      {
+                                             fprintf(logdatafile,"Registro Detalle - CUIT INVALIDO!!! CUIT: %s Length: %d Cliente: %s Cuenta:%s DocId: %s DocCmpId: %d DocLetter: %s DocDctId: %s\n\n", FceCaeNumber[i].clt_cuit, strlen(FceCaeNumber[i].clt_cuit) ,FceCaeNumber[i].clt_id, FceCaeNumber[i].dcn_acc_id, FceCaeNumber[i].doc_id, FceCaeNumber[i].dcn_doc_cmp_id, FceCaeNumber[i].dcn_doc_letter, FceCaeNumber[i].dcn_doc_dct_id); /* Enviarlo a un archivo de log para los comprobantes B*/
+                                             strcpy(FceCaeNumber[i].clt_cuit,CuitGenerico); /* CUIT GENERICO*/
+                                             flag_warning_registros++; /* flag para los comprobantes B*/
+                                      }
+                                }
+                          }
+                          else { /* No tiene CUIT */
+                                /* Tiene Ident number */
+                                if(strcmp(FceCaeNumber[i].clt_ident_number,"00000000000"))
+                                {
+                                    strcpy(FceCaeNumber[i].clt_cuit,FceCaeNumber[i].clt_ident_number);
+                                }
+                                else {
+                                       if(!strcmp(FceCaeNumber[i].clt_ident_number,"00000000000") && !strcmp(FceCaeNumber[i].clt_cuit,"00000000000"))
+                                       { 
+                                              strcpy(FceCaeNumber[i].clt_cuit, "00000000000");
+                                              strcpy(FceCaeNumber[i].clt_identification_type, SIN_IDENT);
+                                              if(FceCaeNumber[i].dcn_doc_amount >= umbralFCB)
+                                              {
+                                                     fprintf(logdatafile,"Registro Detalle - SIN IDENT con monto mayor o igual a %f !!! CUIT: %s Length: %d Cliente: %s Cuenta:%s DocId: %s DocCmpId: %d DocLetter: %s DocDctId: %s\n\n", umbralFCB, FceCaeNumber[i].clt_cuit, strlen(FceCaeNumber[i].clt_cuit) ,FceCaeNumber[i].clt_id, FceCaeNumber[i].dcn_acc_id, FceCaeNumber[i].doc_id, FceCaeNumber[i].dcn_doc_cmp_id, FceCaeNumber[i].dcn_doc_letter, FceCaeNumber[i].dcn_doc_dct_id); /* Enviarlo a un archivo de log para los comprobantes B*/   
+                                                     flag_warning_registros++; /* flag para los comprobantes B*/
+                                              }
+                                       }
+                                }
+                          }
+                    }
+                    else { /* El cliente no tiene identificacion */
+                        if(strcmp(FceCaeNumber[i].clt_cuit,"00000000000")) {
+                            strcpy(FceCaeNumber[i].clt_identification_type, CUIT);                        
+                        }
+                        else{
+                            if(FceCaeNumber[i].dcn_doc_amount >= umbralFCB)
+                            {
+                                  fprintf(logdatafile,"Registro Detalle - SIN IDENT con monto mayor o igual a %f !!! CUIT: %s Length: %d Cliente: %s Cuenta:%s DocId: %s DocCmpId: %d DocLetter: %s DocDctId: %s\n\n", umbralFCB, FceCaeNumber[i].clt_cuit, strlen(FceCaeNumber[i].clt_cuit), FceCaeNumber[i].clt_id, FceCaeNumber[i].dcn_acc_id, FceCaeNumber[i].doc_id, FceCaeNumber[i].dcn_doc_cmp_id, FceCaeNumber[i].dcn_doc_letter, FceCaeNumber[i].dcn_doc_dct_id); /* Enviarlo a un archivo de log para los comprobantes B*/   
+                                  flag_warning_registros++; /* flag para los comprobantes B*/
+                            }
+                        }
+                    }
+              }
+        }
+    
+        /* Controlo la secuencialidad de los documentos procesados */
+        if ((atol(FceCaeNumber[i].doc_id) - DocId_Ant)!=1 && procesados>0){
+          fprintf(logdatafile,"Registro Detalle - ERROR DE SECUENCIALIDAD - FALTAN [%d] DOCUMENTOS ENTRE EL DOCUMENTO ANTERIOR PROCESADO %ld Y EL DOCUMENTO ACTUAL %s DocCmpId_Actual: %d DocLetter_Actual: %s DocDctId_Actual: %s\n\n", (atol(FceCaeNumber[i].doc_id)-DocId_Ant)-1, DocId_Ant, FceCaeNumber[i].doc_id, FceCaeNumber[i].dcn_doc_cmp_id, FceCaeNumber[i].dcn_doc_letter, FceCaeNumber[i].dcn_doc_dct_id);
+          flag_bad_registros++;
+        }
+
+        DocId_Ant = atol(FceCaeNumber[i].doc_id);
+
+        if (!flag_bad_registros)
+        {
+          sprintf(line,"%02d%-2.2s%-8.8s%-2.2s%-5.5s%-8.8s%-2.2s%-11.11s%015.0f%015.0f%015.0f%015.0f%015.0f%015.0f%-8.8s%-8.8s%-8.8s%-3.3s%010d%-20.20s%-1.1s%-4.4s%-8.8s%-8.8s%01d%-1.1s%-3.3s%-49.49s",
+                  TIPO_REG_1,
+                  CONCEPT_TYPE,
+                  FceCaeNumber[i].dcn_doc_document_date,
+                  FceCaeNumber[i].dvl_code,
+                  PuntoVenta,
+                  FceCaeNumber[i].dcn_doc_id,
+                  FceCaeNumber[i].clt_identification_type,  
+                  FceCaeNumber[i].clt_cuit,
+                  FceCaeNumber[i].dcn_doc_amount*100,
+                  FceCaeNumber[i].ImpNoGravado*100,   
+                  FceCaeNumber[i].ImpMontoNeto*100,
+                  FceCaeNumber[i].ImpExento*100,
+                  FceCaeNumber[i].ImpMontoIva*100,
+                  (FceCaeNumber[i].ImpMontoRni+ FceCaeNumber[i].ImpPercepIVA + FceCaeNumber[i].ImpPercepIIBB + 
+                  FceCaeNumber[i].ImpPercepMunicip + FceCaeNumber[i].ImpImint + FceCaeNumber[i].ImpProd)*100,
+                  SchStartDate,          
+                  SchEndDate,              
+                  FceCaeNumber[i].dcn_doc_due_date, 
+                  FceCaeNumber[i].Moneda,
+                  FceCaeNumber[i].TipoCambio*1000000,
+                  " ", /* CAE */
+                  " ", /* ResultadoDevolucion */
+                  " ", /* MotivoResultado */       
+                  " ", /* FechaCae */
+                  " ", /* FechaVtoCae */
+                  FceCaeNumber[i].dcn_doc_cmp_id,
+                  FceCaeNumber[i].dcn_doc_letter,
+                  FceCaeNumber[i].dcn_doc_dct_id,
+                  " "
+                  );
+
+          if (strlen(line) != LINE_SIZE)
+          {
+              fprintf(logdatafile,"Registro Comprobante - Bad Line Size!!! Cuenta: %s DocId: %s DocCmpId: %d DocLetter: %s DocDctId: %s Length: %i Maximo Permitido: %d\n\n", FceCaeNumber[i].dcn_acc_id, FceCaeNumber[i].doc_id, FceCaeNumber[i].dcn_doc_cmp_id, FceCaeNumber[i].dcn_doc_letter, FceCaeNumber[i].dcn_doc_dct_id, strlen(line),LINE_SIZE);
+              flag_bad_registros++;
+          }
+
+          TotImporteTotal         += FceCaeNumber[i].dcn_doc_amount;
+          TotImporteNoGravado     += FceCaeNumber[i].ImpNoGravado;
+          TotImporteNetoGravado   += FceCaeNumber[i].ImpMontoNeto;
+          TotImporteIva           += FceCaeNumber[i].ImpMontoIva;
+          TotImporteRni           += FceCaeNumber[i].ImpMontoRni;
+          TotImporteExento        += FceCaeNumber[i].ImpExento;
+          TotImportePercepIVA     += FceCaeNumber[i].ImpPercepIVA;
+          TotImportePercepIIBB    += FceCaeNumber[i].ImpPercepIIBB;
+          TotImportePercepMunicip += FceCaeNumber[i].ImpPercepMunicip;
+          TotImporteImpInterno    += FceCaeNumber[i].ImpImint;
+          TotImporteImpProducto   += FceCaeNumber[i].ImpProd;
+
+          fprintf(datafile, "%s\n", line);
+        }
+        
+        if (!flag_bad_registros && !reproceso_flag)
+            Actualizar_Estados(FceCaeNumber[i].doc_id, FceCaeNumber[i].dcn_doc_letter, FceCaeNumber[i].dcn_doc_dct_id, FceCaeNumber[i].dcn_doc_cmp_id, "EA");
+
+        /* Cantidad de facturas procesadas */
+        procesados++;
+      }
+      else { /* Registros detalles de alicuotas IVA o detalles de tributos */     
+        det_printed = 0;      
+        /*** Registros detalle de Tributos ***/         
+        if(FceCaeNumber[i].dod_percent != 0){
+          /*** Impuestos Nacionales codigo 01 ***/
+          aux_sum = FceCaeNumber[i].ImpPercepIVA + FceCaeNumber[i].ImpMontoRni;            
+          if(aux_sum > 0){ 
+            memset(&line, NULL, sizeof(line));
+            sprintf(line,"%02d%05d%02d%-80.80s%015.0f%05.0f%015.0f%-138.138s", 
+                  TIPO_REG_3,
+                  seq_num_tributo,
+                  IMPUESTOS_NACIONALES,
+                  " ",
+                  ((aux_sum *100)/FceCaeNumber[i].dod_percent)*100,
+                  (FceCaeNumber[i].dod_percent*100),
+                  (aux_sum) *100,
+                  " "); 
+            fprintf(datafile, "%s\n", line); 
+            seq_num_tributo++;
+            det_printed++;
+          }
+          
+          /*** Impuestos Provinciales 02 ***/
+          aux_sum = FceCaeNumber[i].ImpPercepIIBB;
+          if(aux_sum > 0 ){
+            memset(&line, NULL, sizeof(line));
+            sprintf(line,"%02d%05d%02d%-80.80s%015.0f%05.0f%015.0f%-138.138s", 
+                  TIPO_REG_3,
+                  seq_num_tributo,
+                  IMPUESTOS_PROVINCIALES,
+                  " ",
+                  ((aux_sum *100)/FceCaeNumber[i].dod_percent)*100,
+                  (FceCaeNumber[i].dod_percent*100),
+                  (aux_sum) *100,
+                  " ");
+            fprintf(datafile, "%s\n", line);
+            seq_num_tributo++;              
+            det_printed++;
+          }
+          
+          /*** Impuestos Internos 04 ***/
+          aux_sum = FceCaeNumber[i].ImpImint + FceCaeNumber[i].ImpProd;
+          if(aux_sum > 0 ){
+            memset(&line, NULL, sizeof(line));
+            sprintf(line,"%02d%05d%02d%-80.80s%015.0f%05.0f%015.0f%-138.138s", 
+                  TIPO_REG_3,
+                  seq_num_tributo,
+                  IMPUESTOS_INTERNOS,
+                  " ",
+                  ((aux_sum *100)/FceCaeNumber[i].dod_percent)*100,
+                  (FceCaeNumber[i].dod_percent*100),
+                  (aux_sum) *100,
+                  " ");
+            fprintf(datafile, "%s\n", line);
+            seq_num_tributo++;              
+            det_printed++;
+          }          
+        }
+
+        /*** Registros detalle de IVA ***/ 
+        if(FceCaeNumber[i].dod_percent_vat != 0){
+            if(FceCaeNumber[i].ImpMontoNeto > 0 && FceCaeNumber[i].ImpMontoIva >= 0 ){
+                if (FceCaeNumber[i].ImpMontoIva == 0) /* A pedido de AFIP para IVA $0 el codigo es 3 */
+                    FceCaeNumber[i].iva_code = 3;
+                memset(&line, NULL, sizeof(line));
+                sprintf(line,"%02d%05d%02d%015.0f%015.0f%-223.223s", 
+                        TIPO_REG_4,
+                        seq_num_iva,
+                        FceCaeNumber[i].iva_code,
+                        FceCaeNumber[i].ImpMontoNeto*100,
+                        (FceCaeNumber[i].ImpMontoIva) *100,
+                        " ");
+                fprintf(datafile, "%s\n", line);
+                seq_num_iva++;              
+                det_printed++;                
+            }  
+        }
+        
+        if (strlen(line) != LINE_SIZE && det_printed > 0)
+        {
+            fprintf(logdatafile,"Registro Tributo/IVA - Bad Line Size!!! Cuenta: %s DocId: %s DocCmpId: %d DocLetter: %s DocDctId: %s Length: %i Maximo Permitido: %d\n\n", FceCaeNumber[i].dcn_acc_id, FceCaeNumber[i].doc_id, FceCaeNumber[i].dcn_doc_cmp_id, FceCaeNumber[i].dcn_doc_letter, FceCaeNumber[i].dcn_doc_dct_id, strlen(line),LINE_SIZE);
+            flag_bad_registros++;
+        }
+      }
+      i++;
+    }
+  }
+
+  if (procesados && !flag_bad_registros)
+  {
+    Imprimo_Totales(procesados, CmpCuit, TotImporteTotal,TotImporteNoGravado,TotImporteNetoGravado,TotImporteIva,TotImporteRni,TotImporteExento,TotImportePercepIVA,TotImportePercepIIBB,TotImportePercepMunicip,TotImporteImpInterno,TotImporteImpProducto);
+  }
+
+  EXEC SQL CLOSE c_registros;
+
+  /* Solamente se hace rollback o commit cuando no es un reproceso */
+  if (!reproceso_flag){
+    if (flag_bad_registros)
+      EXEC SQL ROLLBACK WORK RELEASE;
+    else
+      EXEC SQL COMMIT WORK RELEASE;
+  }
+
+  if (flag_bad_registros){ /* Valida si existen registros invalidos */
+    fprintf(stderr,"ERROR - EXISTEN REGISTROS INVALIDOS en el archivo %s !!!! CORREGIR LOS DATOS ERRONEOS Y CORRER NUEVAMENTE EL PROGRAMA\n",filename_log);
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n", ProgramName);
+  }
+  else
+    if (!procesados){ /* Valida si hubo registros para procesar */
+      /* Se valida si hubo o no reproceso */
+      if(reproceso_flag){
+        fprintf(logdatafile,"ERROR - NO HAY REGISTROS PARA PROCESAR - VERIFICAR SI LOS PARAMETROS DE CORRIDA DEL PROGRAMA SON CORRECTO O SI HUBIERA ERRORES DE DATOS Y EJECUTAR EL PROGRAMA NUEVAMENTE - Fecha: [%s] letra [%s] Compania: [%d] Sequence: [%s] Status: [%s]\n\n",year_month_day, letter,CmpId, sequence, DcnStatus_Reproceso);
+        fprintf(stderr,"ERROR - NO HAY REGISTROS PARA PROCESAR - VERIFICAR SI LOS PARAMETROS DE CORRIDA DEL PROGRAMA SON CORRECTOS O SI HUBIERA ERRORES DE DATOS Y EJECUTAR EL PROGRAMA NUEVAMENTE - Fecha: [%s] letra [%s] Compania: [%d] Sequence: [%s] Status: [%s]\n",year_month_day, letter,CmpId, sequence, DcnStatus_Reproceso);
+        fprintf(stdout,"Proceso %s Finalizado con Errores\n", ProgramName);
+      }
+      else {
+        fprintf(logdatafile,"ERROR - NO HAY REGISTROS PARA PROCESAR - VERIFICAR SI LOS PARAMETROS DE CORRIDA DEL PROGRAMA SON CORRECTOS O SI HUBIERA ERRORES DE DATOS Y EJECUTAR EL PROGRAMA NUEVAMENTE - Fecha: [%s] letra [%s] Compania: [%d] Sequence: [%s]\n\n",year_month_day, letter,CmpId, sequence);
+        fprintf(stderr,"ERROR - NO HAY REGISTROS PARA PROCESAR - VERIFICAR SI LOS PARAMETROS DE CORRIDA DEL PROGRAMA SON CORRECTOS O SI HUBIERA ERRORES DE DATOS Y EJECUTAR EL PROGRAMA NUEVAMENTE - Fecha: [%s] letra [%s] Compania: [%d] Sequence: [%s]\n",year_month_day, letter,CmpId, sequence);
+        fprintf(stdout,"Proceso %s Finalizado con Errores\n", ProgramName);
+      }
+    }
+    else
+      fprintf(stdout,"Proceso %s Finalizado OK\n", ProgramName);
+     
+  if(flag_bad_registros==0)
+    fprintf(statisticfile,"Cantidad de facturas enviadas a GIRE para la gestion del CAE: %d\n",procesados);    
+  else
+    fprintf(statisticfile,"ERROR - EXISTEN %d REGISTROS INVALIDOS!!!! CORREGIR LOS DATOS ERRONEOS Y CORRER NUEVAMENTE EL PROGRAMA\n", flag_bad_registros);
+
+  fprintf(logdatafile,"Cantidad de Registros con ERROR   : %d\n",flag_bad_registros);
+  fprintf(logdatafile,"Cantidad de Registros con WARNING : %d\n",flag_warning_registros);
+
+  fclose(datafile);
+  fclose(statisticfile);
+  fclose(logdatafile);
+  
+  if(flag_bad_registros==0&&procesados)
+    exit(0);
+  else
+    exit(1);    
+}   /* del Main */
+
+void DBConnect(void)
+{
+  char usuario[21];
+  char passwd[21];
+
+  /* Conectarse a la Base de Datos con el User/Password  */
+  strcpy(usuario,getenv("STEALTH_USR"));
+  strcpy(passwd,getenv("STEALTH_PWD"));
+
+  EXEC SQL CONNECT :usuario IDENTIFIED BY :passwd;
+}
+
+void DatosDefault(char *year_month_day, char *fecha_generacion ,int CmpId, const char *program, char *letter)
+{
+  char sDstId[3];
+  short indPuntoVenta;
+  char vProgramName[60];
+
+  /* Se formatea la fecha */
+  memset(fecha_generacion, NULL, sizeof(fecha_generacion));
+  strcpy(fecha_generacion,year_month_day);
+  
+  /* Se carga el punto de venta */
+  memset(PuntoVenta, NULL, sizeof(PuntoVenta)); 
+
+  strcpy( sDstId, FACTURA );
+   
+  EXEC SQL WHENEVER SQLERROR CONTINUE;
+   
+  EXEC SQL SELECT LPAD(nid_pos_id, 5, '0') as nid_pos_id
+             INTO :PuntoVenta :indPuntoVenta
+             FROM new_inv_gen_document_types
+            WHERE nid_dct_dct_id = :sDstId
+              AND nid_letter     = :letter
+              AND nid_cmp_id     = :CmpId 
+              AND TO_DATE(:year_month_day, 'YYYYMMDD') BETWEEN nid_start_date AND nid_end_date;
+              
+  if ( sqlca.sqlcode == 1403 )
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n",program);
+    fprintf(stderr,"No se encontro el punto de venta para el tipo de documento [%s] letra [%s] en la tabla NEW_INV_GEN_DOCUMENT_TYPES.\n",sDstId ,letter);
+    exit(1);
+  }
+  else if ( sqlca.sqlcode == -2112 || sqlca.sqlcode == 1422 ) /* TOO_MANY_ROWS - Devuelve mas de un punto de venta vigente */
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n",program);
+    fprintf(stderr,"Se encontraron mas de un punto de venta vigente para el tipo de documento [%s] letra [%s] en la tabla INV_GEN_DOCUMENT_TYPES.\n",sDstId ,letter);
+    exit(1);
+  }
+  else if ( indPuntoVenta == -1 ) /* Punto de Venta con valor NULL */
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n",program);
+    fprintf(stderr,"El punto de venta para el tipo de documento [%s] letra [%s] es NULL en la tabla INV_GEN_DOCUMENT_TYPES.\n",sDstId ,letter);
+    exit(1);
+  }
+   
+  EXEC SQL WHENEVER SQLERROR DO AbortaPrograma(void);
+   
+  /* Se carga el codigo de secuencia */
+  memset(SecIdFCA, NULL, sizeof(SecIdFCA));
+
+  EXEC SQL SELECT stl_char_value
+              INTO :SecIdFCA
+              FROM stl_parameters
+             WHERE stl_id = 'SECFCA'
+               AND stl_start_date < sysdate
+               AND stl_end_date is null;
+
+  if ( sqlca.sqlcode == 1403 )
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n",program);
+    fprintf(stderr,"No se encontro la secuencia 'SECFCA' en stl_parameters\n");
+    exit(1);
+  }
+
+  /* Se carga un CUIT generico */
+   
+  memset(CuitGenerico, NULL, sizeof(CuitGenerico));
+
+  EXEC SQL SELECT stl_char_value
+              INTO :CuitGenerico
+              FROM stl_parameters
+             WHERE stl_id = 'CUITGE'
+               AND stl_start_date < sysdate
+               AND stl_end_date is null;
+
+  if ( sqlca.sqlcode == 1403 )
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n",program);
+    fprintf(stderr,"No se encontro el CUIT generico 'CUITGE' en stl_parameters\n");
+    exit(1);
+  }
+
+  /* Se carga el start y end date del corte */
+  memset(SchStartDate,NULL, sizeof(SchStartDate));
+  memset(SchEndDate,NULL, sizeof(SchEndDate));
+   
+  EXEC SQL
+     SELECT to_char(min(sch_start_date),'YYYYMMDD'),
+             to_char(min(sch_end_date),'YYYYMMDD'),
+             min(sch_id),
+             max(sch_id)
+        INTO :SchStartDate, :SchEndDate, :MinSchId, :MaxSchId
+        FROM schedulers, cycles
+       WHERE cyc_id = sch_cyc_id
+         AND cyc_cmp_id = :CmpId
+         AND to_char (sch_end_date, 'YYYYMMDD') = :year_month_day;
+
+  if (sqlca.sqlcode)
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n", program);
+    fprintf(stderr,"Error %d al buscar el Sch_Start_Date y el Sch_End_Date haciendo un join entre las tablas Schedulers y Cycles. Compania: [%d] Fecha: [%s]\n", sqlca.sqlcode, CmpId, year_month_day);
+    exit (1);
+  }
+  
+  /* Se obtiene umbral minimo */
+  EXEC SQL
+      SELECT stl_value
+        INTO :umbralFCB
+        FROM stl_parameters
+       WHERE stl_id = 'UMBFCB'
+         AND TO_DATE(:year_month_day, 'YYYYMMDD') BETWEEN stl_start_date AND NVL(stl_end_date, TO_DATE(:year_month_day, 'YYYYMMDD'));
+           
+  if (sqlca.sqlcode)
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n", program);
+    fprintf(stderr,"Error %d al buscar el importe umbral facturas B en STL_PARAMETERS ID: 'UMBFCB' Fecha: [%s]\n", sqlca.sqlcode, year_month_day);
+    exit (1);
+  }
+  
+  /* Se obtiene directorio de trabajo */
+  memset(workPath,NULL, sizeof(workPath));
+  memset(vProgramName, NULL, sizeof(vProgramName));
+  strcpy(vProgramName, ProgramName);
+  
+  EXEC SQL
+      SELECT REPLACE(REPLACE(stl_char_value, '{PAIS}', 'ar'), '{PROCESO}', :vProgramName) || 'new/'
+        INTO :workPath
+        FROM stl_parameters
+       WHERE stl_id = 'PRODIR'
+         AND TO_DATE(:year_month_day, 'YYYYMMDD') BETWEEN stl_start_date AND NVL(stl_end_date, TO_DATE(:year_month_day, 'YYYYMMDD'));
+           
+  if (sqlca.sqlcode)
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n", program);
+    fprintf(stderr,"Error %d al buscar el directorio de trabajo en STL_PARAMETERS ID: 'PRODIR' Fecha: [%s]\n", sqlca.sqlcode, year_month_day);
+    exit (1);
+  }
+}
+
+void DatosCia(char *year_month_day, int CmpId, char *CmpCuit,char *CmpName, const char *program)
+{
+
+  char vCmpCuit[16];
+  char vCmpName[51];
+  int  vTC = 0;
+  memset(CmpCuit, NULL, sizeof(CmpCuit));
+  memset(vCmpCuit, NULL, sizeof(vCmpCuit));
+  memset(CodCTIGire, NULL, sizeof(CodCTIGire));
+  memset(PrefijoArchivo, NULL, sizeof(PrefijoArchivo));
+  memset(CmpName, NULL, sizeof(CmpName));
+  memset(vCmpName, NULL, sizeof(vCmpName));
+
+  /* Se obtiene tipo de codigo de compania en Gire */
+  EXEC SQL
+      SELECT stl_value
+        INTO :vTC
+        FROM stl_parameters
+       WHERE stl_id = 'TCGIRE'
+         AND TO_DATE(:year_month_day, 'YYYYMMDD') BETWEEN stl_start_date AND NVL(stl_end_date, TO_DATE(:year_month_day, 'YYYYMMDD'));
+           
+  if (sqlca.sqlcode)
+  {
+    fprintf(stdout,"Proceso %s Finalizado con Errores\n", program);
+    fprintf(stderr,"Error %d al buscar el tipo de cogigo de CMP en STL_PARAMETERS ID: 'TCGIRE' Fecha: [%s]\n", sqlca.sqlcode, year_month_day);
+    exit (1);
+  }
+
+  /* Busco datos de la compania */
+  EXEC SQL
+     SELECT substr (nvl(ltrim(rtrim(replace (cmp_cuit,'-',''))), ' '),1,11), 
+            cmp_name,
+            decode(:vTC, 1, nvl(cmp_code_srv,'000'), nvl(cmp_code_cel,'000')), 
+            nvl(cmp_initials,'XXX')
+       INTO :vCmpCuit,:vCmpName, :CodCTIGire, :PrefijoArchivo
+       FROM companies
+      WHERE cmp_id = :CmpId;
+  
+  if ( sqlca.sqlcode == 1403 )
+  {
+      fprintf(stdout,"Proceso %s Finalizado con Errores\n",program);
+      fprintf(stderr,"No se encontro la compania [%d] en la tabla companies\n",CmpId);
+      exit(1);
+  }
+  else {
+    if(strlen(vCmpCuit)!= 11 || (vCmpCuit[0]!='2' && vCmpCuit[0]!='3')) {
+      fprintf(stdout,"Proceso %s Finalizado con Errores\n",program);
+      fprintf(logdatafile,"ESTA MAL CARGADO EL CUIT [%s - length: %d] DE LA CIA [%d] EN LA TABLA COMPANIES\n",vCmpCuit,strlen(vCmpCuit),CmpId);
+      exit(1);
+    }
+    else { 
+      if (strcmp(CodCTIGire,"000") == 0) {
+        fprintf(stdout,"Proceso %s Finalizado con Errores\n",program);
+        fprintf(logdatafile,"No esta cargado el campo CMP_CODE_CEL DE LA CIA [%d] EN LA TABLA COMPANIES\n",CmpId);
+        exit(1);
+      }
+      else { 
+        if (strcmp(PrefijoArchivo,"XXX")== 0) {
+               fprintf(stdout,"Proceso %s Finalizado con Errores\n",program);
+               fprintf(logdatafile,"No esta cargado el campo CMP_INITIALS DE LA CIA [%d] EN LA TABLA COMPANIES\n",CmpId);
+               exit(1);
+        }
+      }
+    }
+  }
+  strcpy(CmpCuit,vCmpCuit);
+  strcpy(CmpName,vCmpName);
+}
+
+int Load_PercepcionesIIBB (char *year_month_day)
+{
+  EXEC SQL
+      SELECT DISTINCT pct_inc_id
+        INTO :pacts
+        FROM pacts
+       WHERE to_date (:year_month_day, 'YYYYMMDD') BETWEEN pct_start_date
+                                                       AND pct_end_date;
+  return(sqlca.sqlerrd[2]);
+}
+
+int Load_IVAadicional (char *year_month_day)
+{
+  EXEC SQL
+      SELECT DISTINCT vad_inc_id
+        INTO :vats
+        FROM vat_aditionals
+       WHERE to_date (:year_month_day, 'YYYYMMDD') BETWEEN vad_start_date
+                                                       AND vad_end_date
+         AND vad_inc_id <> 'IMINT';
+
+  return(sqlca.sqlerrd[2]);
+}
+
+int Load_ImpIntProd (char *year_month_day)
+{
+  EXEC SQL
+      SELECT DISTINCT inp_inc_id
+        INTO :stImprod
+        FROM imint_products
+       WHERE to_date (:year_month_day, 'YYYYMMDD') BETWEEN inp_start_date
+                                                       AND inp_end_date;
+  return(sqlca.sqlerrd[2]);
+}
+
+void Imprimo_Cabecera(char *CmpCuit,char *CmpName,char *fecha_generacion,char *PuntoVenta)
+{
+  char filler_cabecera = ' ';
+  char codigo_error    = ' ';
+  char descrip_error   = ' ';   
+
+  memset(line, NULL, sizeof(line));
+  sprintf(line,"%02d%-27.27s%-13.13s%-100.100s%-8.8s%-5.5s%-107.107s",TIPO_REG_0,DESCRIP_SERVIC,CmpCuit,CmpName,fecha_generacion,PuntoVenta,filler_cabecera);
+
+  if (strlen(line) != LINE_SIZE){
+    fprintf(logdatafile,"Registro Cabecera - Bad Line Size!!! Length: %i Maximo Permitido: %d\n",strlen(line),LINE_SIZE);
+    flag_bad_registros++;
+  }
+  else
+    fprintf(datafile, "%s\n", line);
+}
+
+void Imprimo_Totales(int TotCantReg, char* CmpCuit,double TotImporteTotal, double TotImporteNoGravado, double TotImporteNetoGravado,double TotImporteIva,double TotImporteRni, double TotImporteExento,double TotImportePercepIVA,double TotImportePercepIIBB,double TotImportePercepMunicip,double TotImporteImpInterno, double TotImporteImpProducto)
+{
+   char filler_totales=' ';
+   memset(line, NULL, sizeof(line));
+   sprintf(line,"%02d%010d%018.0f%-232.232s",TIPO_REG_7,TotCantReg, TotImporteTotal*100,filler_totales);
+
+   if (strlen(line) != LINE_SIZE){
+    fprintf(logdatafile,"Registro Totales - Bad Line Size!!! Length: %i Maximo Permitido: %d\n",strlen(line),LINE_SIZE);
+    flag_bad_registros++;
+   }
+   else
+      fprintf(datafile, "%s\n", line);
+}
+
+void Actualizar_Estados(char *DocId, char *DocLetter, char *DocDctId, int DocCmpId, char *DcnStatus)
+{
+  EXEC SQL 
+      UPDATE document_cae_numbers
+         SET dcn_status     = :DcnStatus
+       WHERE dcn_doc_id     = :DocId
+         AND dcn_doc_letter = :DocLetter 
+         AND dcn_doc_cmp_id = :DocCmpId
+         AND dcn_doc_dct_id = :DocDctId; 
+
+  if (sqlca.sqlcode != 0){
+     fprintf(logdatafile,"ERROR al ACTUALIZAR la tabla DOCUMENT_CAE_NUMBER [%d] !!!\n", sqlca.sqlcode);
+     flag_bad_registros++;
+  }
+}
+
+void Arma_Cursor (char *cursor, int cant_vat, int cant_pac, int cant_improd, char *year_month_day, char *DcnStatus,char *letter,int CmpId)
+{
+  int i;
+  char aux[5000];
+ 
+  memset(cursor, NULL,sizeof(cursor));
+  
+  strcat(cursor, 
+    "WITH tmp1 As \n\
+        ( \n\
+        Select /*+ materialize full(nid) full(dlv) use_hash(nid,dlv)*/ \n\
+               Nid_Dct_Id, Nid_Cmp_Id, Nid_Letter, Nid_Start_Date, Nid_End_Date,Dlv_Code \n\
+          From New_Inv_Gen_Document_Types Nid,Document_Letter_Vat_Codes  Dlv \n\
+		 WHERE Dlv_Dct_Id = Nid_Dct_Id \n\
+           And Dlv_Letter = Nid_Letter \n ");
+    
+    memset  (aux, NULL, sizeof(aux));
+    sprintf (aux,"        AND Nid_Cmp_Id = %d \n", CmpId); 
+    strcat  (cursor, aux);
+    
+    memset  (aux, NULL, sizeof(aux));
+    sprintf (aux,"          AND nid_dct_dct_id = '%s'\n", FACTURA); 
+    strcat  (cursor, aux);
+	
+	memset  (aux, NULL, sizeof(aux));
+    sprintf (aux,"          AND Nid_Letter = '%s'\n", letter); 
+    strcat  (cursor, aux);
+	
+	memset  (aux, NULL, sizeof(aux));
+    sprintf (aux,"          AND To_Date('%s', 'YYYYMMDD') BETWEEN nid_start_date AND nid_end_date \n", year_month_day);
+    strcat  (cursor, aux);
+
+    strcat (cursor,
+    "    ), \n\
+    w_cae AS ( \n\
+      SELECT /*+ materialize */ \n\
+          dcn_doc_document_date dcn_doc_document_date, /* Fecha Comprobante */ \n\
+          dvl_code                 dvl_code,            /* Codigo Tipo Comprobante */ \n\
+          dcn_doc_id               dcn_doc_id,          /* Nro. de Documento */ \n\
+          ltrim(dcn_doc_id,'0')    doc_id,  /* Nro. de Documento Puro*/ \n\
+          clt_cuit                 clt_cuit,            /* CUIT */ \n\
+          clt_identification_type  clt_identification_type, /* Codigo Tipo Identificacion */ \n\
+          clt_ident_number         clt_ident_number,    /* Nro. de Identificacisn */ \n\
+          dcn_doc_amount           dcn_doc_amount,      /* Monto del Documento */ \n\
+          ImpNoGravado             ImpNoGravado,        /* Importe No Gravado */ \n\
+          ImpMontoNeto             ImpMontoNeto,        /* Monto Neto */ \n\
+          dod_percent_vat          dod_percent_vat,     /* Alicuota de IVA */ \n\
+          dod_percent              dod_percent,         /* Alicuota detributos */ \n\
+          ImpMontoIva              ImpMontoIva,         /* Monto IVA */ \n\
+          ImpMontoRni              ImpMontoRni,         /* Impuesto Liquidado RNI o Perpcecion a No Categorizado - IVA Adicional */\n\
+          ImpExento                ImpExento,           /* Importe Exento */ \n\
+          ImpPercepIVA             ImpPercepIVA,        /* Importe de Percepciones de IVA */ \n\
+          ImpPercepIIBB            ImpPercepIIBB,       /* Importe de Percepcion de IIBB */ \n\
+          ImpPercepMunicip         ImpPercepMunicip,    /* Importe Percepcion Impuestos Municipal */ \n\
+          ImpImint                 ImpImint,            /* Impuesto Interno*/ \n\
+          ImpProd                  ImpProd,             /* Impuesto Interno Producto*/ \n\
+          vat_code,\n\
+          IncVatCode,\n\
+          'PES'                    currency_code,       /* Codigo de Moneda */ \n\
+          1                        change_type,         /* Tipo de Cambio */ \n\
+          dcn_doc_due_date         dcn_doc_due_date,    /* Fecha de Vencimiento */  \n\
+          dcn_doc_cmp_id           dcn_doc_cmp_id,      /* Compania del Documento */\n\
+          dcn_doc_letter           dcn_doc_letter,      /* Letra del Documento */ \n\
+          dcn_doc_dct_id           dcn_doc_dct_id,      /* Tipo de Documento */ \n\
+          dcn_acc_id               dcn_acc_id,          /* Cuenta */ \n\
+          clt_id                   clt_id,              /* Cliente */ \n\
+          acc_geu_id               acc_geu_id           /* Provincia o pais de la cuenta */  \n\
+        FROM \n\
+      ( \n\
+      SELECT /*+ leading(t1,dcn,avt,vat,pcp,acc,geu,dod,inc) NO_GBY_PUSHDOWN no_SWAP_JOIN_INPUTS(t1) \n\
+               full(t1) parallel(t1,6) pq_distribute(t1,hash,hash)    px_join_filter(t1) \n\
+               full(dcn) parallel(dcn,6) pq_distribute(dcn,hash,hash) px_join_filter(dcn) \n\
+               full(avt) parallel(avt,6) pq_distribute(avt,hash,hash) px_join_filter(avt) \n\
+               full(vat) parallel(vat,6) pq_distribute(vat,hash,hash) px_join_filter(vat) \n\
+               full(pcp) parallel(pcp,6) pq_distribute(pcp,hash,hash) px_join_filter(pcp) \n\
+               full(acc) parallel(acc,6) pq_distribute(acc,hash,hash) px_join_filter(acc) \n\
+               full(geu) parallel(geu,6) pq_distribute(geu,hash,hash) px_join_filter(geu) \n\
+               full(clt) parallel(clt,6) pq_distribute(clt,hash,hash) px_join_filter(clt) \n\
+               full(dod) parallel(dod,6) pq_distribute(dod,hash,hash) px_join_filter(dod) \n\
+               full(inc) parallel(inc,6) pq_distribute(inc,hash,hash) px_join_filter(inc) */   \n\
+        to_char(clt_id) clt_id, \n\
+        dcn_acc_id dcn_acc_id, \n\
+        substr (nvl (ltrim(rtrim(replace (clt_cuit,'-',''))), '00000000000'),1,11) clt_cuit,\n\
+        lpad(nvl(to_char(clt_identification_number), '0'), 11, '0') clt_ident_number,\n\
+        to_char (nvl (dcn_doc_document_date, sysdate), 'YYYYMMDD') dcn_doc_document_date, \n\
+        to_char (nvl (dcn_doc_due_date, sysdate), 'YYYYMMDD') dcn_doc_due_date, \n\
+        dcn_doc_letter dcn_doc_letter, \n\
+        dcn_doc_cmp_id dcn_doc_cmp_id, \n\
+        dcn_doc_dct_id dcn_doc_dct_id,\n\
+        lpad(substr(dcn_doc_id,1,8),8,'0') dcn_doc_id,\n\
+        round (nvl (dcn_doc_amount,0), 2) dcn_doc_amount,\n\
+        nvl (vat_code, ' ') vat_code,\n\
+        nvl (dlv_code, '99') dvl_code,\n\
+        decode(clt_identification_type,'CI',geu_identity_card_code, 'EXT',94,'DNI', 96, 'LC', 90, 'LE', 89, 'PAS', 94, NULL, 99, 99) clt_identification_type,\n\
+        sum \n\
+          (decode( \n\
+              (case \n\
+                  when nvl(inc_vgr_id, ' ') = 'N' and dod_amount != 0 then \n\
+                      ' ' \n\
+                  when dod_percent_vat = 0 and acc_geu_id = 'TF' then \n\
+                      'X' \n\
+                  when dod_percent_vat = 0 and avt_vat_id = 'RIEX' then \n\
+                      'E' \n\
+                  when dod_percent_vat = 0 and avt_vat_id = 'RIZF' then \n\
+                      'Z' \n\
+                  when dod_percent_vat = 0 and dcn_doc_letter = 'E' then \n\
+                      'X' \n\
+                  when dod_percent_vat = 0 and dod_amount != 0 then \n\
+                      'E' \n\
+                  else \n\
+                      ' ' \n\
+              end) ,'X',0,1) \n\
+            ) IncVatCode, \n\
+        acc_geu_id acc_geu_id, \n\
+        round( sum \n\
+          (decode(\n\
+           (case \n\
+               when nvl(inc_vgr_id, ' ') = 'N' and dod_amount != 0 then \n\
+                  ' ' \n\
+               when dod_percent_vat = 0 and acc_geu_id = 'TF' then \n\
+                  'X' \n\
+               when dod_percent_vat = 0 and avt_vat_id = 'RIEX' then \n\
+                  'E' \n\
+               when dod_percent_vat = 0 and avt_vat_id = 'RIZF' then \n\
+                  'Z' \n\
+               when dod_percent_vat = 0 and dcn_doc_letter = 'E' then \n\
+                  'X' \n\
+               when dod_percent_vat = 0 and dod_amount != 0 then\n\
+                   'E' \n\
+               else \n\
+                  ' '\n\
+           end) ,' ',0.0,nvl(dod_amount,0)) \n\
+            )\n\
+         ,4) ImpExento, \n\
+        round (sum (decode(inc_vgr_id,'N',nvl(dod_amount,0), 0)),4) ImpNoGravado, \n\
+        round (sum(decode(nvl(dod_percent_vat,0),0,0, nvl(dod_amount,0))),4) ImpMontoNeto, \n\
+        dod_percent_vat, \n\
+        dod_percent, \n\
+        round (sum(nvl(dod_amount * dod_percent_vat / 100, 0)), 4) ImpMontoIva, \n\
+        round (sum(case \n\
+                       when ((pcp_inc_id = dod_inc_id) or \n\
+                             (dod_inc_id = 'ANPEC' or dod_inc_id = 'CORPC' or  \n\
+                              dod_inc_id = 'ANPED' or dod_inc_id = 'CORPD'))  then  \n\
+                                nvl(dod_amount_tot,0) \n\
+                       else \n\
+                                0.0  \n\
+                      end  \n\
+             ),4) ImpPercepIVA, \n");
+       
+  strcat (cursor, "ROUND( NVL (SUM (CASE WHEN dod_inc_id IN (");
+  
+  for (i=0; i < cant_pac; i++)
+  {
+      memset (aux, NULL, sizeof(aux));
+      if (i != cant_pac - 1)
+      {   
+          if (i%20) 
+          {
+              sprintf(aux, "'%s',", pacts[i]);
+          } else {
+              sprintf(aux, "'%s',\n", pacts[i]);
+          }
+      } else {
+          sprintf(aux, "'%s'\n", pacts[i]);
+      }
+      strcat (cursor, aux);
+  }
+  strcat (cursor, ") THEN dod_amount_tot ELSE 0 END), 0), 4) ImpPercepIIBB,\n");
+ 
+  /*  PARCHE CODIGOS QUE NO ESTAN EN VAT_ADITIONALS */
+  strcat (cursor, "round (nvl (sum (decode (dod_inc_id, 'P135C', dod_amount_tot, 'P105C', dod_amount_tot, 'P135B', dod_amount_tot, 'P105B', dod_amount_tot,"); 
+
+  for (i=0; i < cant_vat; i++)
+     {
+      memset (aux, NULL, sizeof(aux));
+      sprintf(aux, " '%s', dod_amount_tot,\n", vats[i]);
+      strcat (cursor, aux);
+  }
+  strcat (cursor, " null)), 0), 4) ImpMontoRni,\n\
+    0 ImpPercepMunicip,\n\
+    round (nvl (sum (decode (dod_inc_id, 'IMINT', dod_amount_tot,NULL)), 0), 4) ImpImint,\n");
+    
+  strcat (cursor, "round (nvl (sum (decode (dod_inc_id, ");
+  for (i=0; i < cant_improd; i++)
+  {
+      memset (aux, NULL, sizeof(aux));
+      sprintf(aux, " '%s', dod_amount_tot,\n", stImprod[i]);
+      strcat (cursor, aux);
+  }
+  strcat (cursor, " null)), 0), 4) ImpProd \n");
+  
+  strcat (cursor,
+  "FROM tmp1 t1,  \n\
+        Document_Cae_Numbers Dcn, \n\
+        Account_Vats         Avt, \n\
+        Vat_Types            Vat, \n\
+        Perceptions          Pcp, \n\
+        Accounts             Acc, \n\
+        Geografic_Units      Geu, \n\
+        Client               Clt, \n\
+        Document_Details     Dod, \n\
+        Invoice_Concepts     Inc \n ");
+  
+  memset  (aux, NULL, sizeof(aux));
+  sprintf (aux," Where Dcn.Dcn_Doc_Document_Date >= To_Date('%s', 'YYYYMMDD') \n", year_month_day);
+  strcat  (cursor, aux);
+  
+  memset  (aux, NULL, sizeof(aux));
+  sprintf (aux,"    And Dcn.Dcn_Doc_Document_Date < To_Date('%s', 'YYYYMMDD') + 1 \n", year_month_day);
+  strcat  (cursor, aux);
+
+  memset   (aux, NULL, sizeof(aux));
+  sprintf (aux,"    And Dcn.Dcn_Doc_Letter = '%s'\n", letter); 
+  strcat  (cursor, aux);
+  
+  strcat  (cursor, 
+           "    And Avt.Avt_Acc_Id = Dcn.Dcn_Acc_Id \n\
+    And Dcn.Dcn_Doc_Document_Date >= Avt.Avt_Start_Date \n\
+    And Dcn.Dcn_Doc_Document_Date <= Nvl(Avt.Avt_End_Date, Sysdate) \n\
+    And Vat.Vat_Id = Avt.Avt_Vat_Id \n\
+    And Dcn.Dcn_Doc_Cmp_Id = t1.Nid_Cmp_Id \n\
+    And Dcn.Dcn_Doc_Dct_Id = t1.Nid_Dct_Id \n\
+    And Dcn.Dcn_Doc_Document_Date Between t1.Nid_Start_Date And t1.Nid_End_Date \n\
+    And Dcn.Dcn_Doc_Letter = t1.Nid_Letter \n\
+    And Dcn.Dcn_Acc_Id = Acc.Acc_Id \n\
+    And Geu.Geu_Id = Acc.Acc_Geu_Id \n\
+    And Pcp.Pcp_Vat_Id(+) = Vat.Vat_Id  \n ");
+
+  memset  (aux, NULL, sizeof(aux));
+  sprintf (aux,"   AND to_date ('%s', 'YYYYMMDD') between pcp_start_date(+) and pcp_end_date(+) \n",year_month_day);
+  strcat  (cursor, aux); 
+  
+  strcat  (cursor, 
+           "    And Clt.Clt_Id = Acc.Acc_Clt_Id \n ");
+  
+  memset  (aux, NULL, sizeof(aux));
+  sprintf (aux,"   And Dod.Dod_Sch_Id >= %.0f \n", MinSchId);
+  strcat  (cursor, aux);
+  
+  memset  (aux, NULL, sizeof(aux));
+  sprintf (aux,"    And Dod.Dod_Sch_Id <= %.0f \n", MaxSchId);
+  strcat  (cursor, aux);
+
+  strcat  (cursor, 
+           "    And Dod.Dod_Doc_Letter = Dcn.Dcn_Doc_Letter \n\
+    And Dod.Dod_Doc_Dct_Id = Dcn.Dcn_Doc_Dct_Id \n\
+    And Dod.Dod_Doc_Id     = Dcn.Dcn_Doc_Id \n\
+    And Dod.Dod_Doc_Cmp_Id = Dcn.Dcn_Doc_Cmp_Id \n\
+    And Inc.Inc_Id         = Dod.Dod_Inc_Id \n");
+   
+  memset  (aux, NULL, sizeof(aux));
+  sprintf (aux,"    AND dcn_status = '%s'\n", DcnStatus); 
+  strcat  (cursor, aux);
+
+  memset  (aux, NULL, sizeof(aux));
+  sprintf (aux,"    AND nid_cmp_id = %d\n", CmpId); 
+  strcat  (cursor, aux);
+ 
+  strcat (cursor,
+  "GROUP BY clt_id, \n\
+     dcn_acc_id,\n\
+     substr (nvl (ltrim(rtrim(replace (clt_cuit,'-',''))), '00000000000'),1,11), \n\
+     substr (rtrim(clt_name)||' '||rtrim(clt_surname),1,30), \n\
+     lpad(nvl(to_char(clt_identification_number), '0'), 11, '0'), \n\
+     to_char (nvl (dcn_doc_document_date, sysdate), 'YYYYMMDD'), \n\
+     to_char (nvl (dcn_doc_due_date, sysdate), 'YYYYMMDD'), \n\
+     dcn_doc_letter, \n\
+     dcn_doc_cmp_id, \n\
+     dcn_doc_dct_id, \n\
+     dcn_doc_id,     \n\
+     dod_percent_vat, \n\
+     dod_percent, \n\
+     round (nvl(dcn_doc_amount,0), 2), \n\
+     nvl (vat_code, ' '),  \n\
+     nvl (dlv_code, '99'), \n\
+     decode(clt_identification_type,'CI',geu_identity_card_code, 'EXT',94,'DNI', 96, 'LC', 90, 'LE', 89, 'PAS', 94, NULL, 99, 99), \n\
+     acc_geu_id)),\n\
+    w_cae_sum AS \n\
+    (\n\
+    SELECT /*+ materialize NO_GBY_PUSHDOWN */ * From ( \n\
+    /* Agrupa Montos Exentos y No gravados */ \n\
+     SELECT /*+ NO_GBY_PUSHDOWN */ \n\
+           dcn_doc_document_date,\n\
+           dvl_code,\n\
+           dcn_doc_id,\n\
+           doc_id,\n\
+           clt_cuit,\n\
+           clt_identification_type,\n\
+           clt_ident_number,\n\
+           dcn_doc_amount,\n\
+           ROUND(SUM(ImpNoGravado), 2) ImpNoGravado,\n\
+           0 ImpMontoNeto,\n\
+           0 ImpMontoIva,\n\
+           0 dod_percent,\n\
+           0 dod_percent_vat,\n\
+           0 iva_code,\n\
+           ROUND(SUM(ImpExento), 2) ImpExento,\n\
+           0 ImpMontoRni,\n\
+           0 ImpPercepIVA,\n\
+           0 ImpPercepIIBB,\n\
+           0 ImpPercepMunicip,\n\
+           0 ImpIMINT,\n\
+           0 ImpProd,\n\
+           vat_code,\n\
+           SUM(IncVatCode) IncVatCode,\n\
+           currency_code,\n\
+           change_type,\n\
+           dcn_doc_due_date,\n\
+           dcn_doc_cmp_id,\n\
+           dcn_doc_letter,\n\
+           dcn_doc_dct_id,\n\
+           dcn_acc_id,\n\
+           clt_id clt_id,\n\
+           0 record_type\n\
+       FROM w_cae \n\
+      WHERE dod_percent_vat = 0\n\
+        AND  (ImpExento <> 0 OR  ImpNoGravado <> 0 OR IncVatCode = 0)\n\
+    GROUP BY dcn_doc_document_date,\n\
+           dvl_code,\n\
+           dcn_doc_id,\n\
+           doc_id, \n\
+           clt_cuit, \n\
+           clt_identification_type, \n\
+           clt_ident_number, \n\
+           dcn_doc_amount,\n\
+           vat_code,    \n\
+           currency_code, \n\
+           change_type, \n\
+           dcn_doc_due_date, \n\
+           dcn_doc_cmp_id, \n\
+           dcn_doc_letter, \n\
+           dcn_doc_dct_id, \n\
+           dcn_acc_id, \n\
+           clt_id )\n\
+    UNION ALL /* Agrupa Tributos */ \n\
+    (SELECT  /*+ NO_GBY_PUSHDOWN  */ \n\
+        dcn_doc_document_date,\n\
+        dvl_code,\n\
+        dcn_doc_id,\n\
+        doc_id,\n\
+        clt_cuit,\n\
+        clt_identification_type,\n\
+        clt_ident_number,\n\
+        dcn_doc_amount, \n\
+        0 ImpNoGravado,\n\
+        ROUND(SUM (ImpMontoNeto), 2) ImpMontoNeto,\n\
+        ROUND(SUM (ImpMontoIva), 2)  ImpMontoIva,\n\
+        dod_percent,\n\
+        0 dod_percent_vat, \n\
+        0 iva_code, \n\
+        0 ImpExento,\n\
+        ROUND(SUM (ImpMontoRni), 2) ImpMontoRni,\n\
+        ROUND(SUM (ImpPercepIVA), 2) ImpPercepIVA,\n\
+        ROUND(SUM (ImpPercepIIBB), 2) ImpPercepIIBB,\n\
+        ROUND(SUM (ImpPercepMunicip), 2) ImpPercepMunicip,\n\
+        ROUND(SUM (ImpIMINT), 2) ImpIMINT,\n\
+        ROUND(SUM (ImpProd), 2) ImpProd,\n\
+        vat_code, \n\
+        SUM(IncVatCode) IncVatCode, \n\
+        currency_code, \n\
+        change_type, \n\
+        dcn_doc_due_date, \n\
+        dcn_doc_cmp_id, \n\
+        dcn_doc_letter, \n\
+        dcn_doc_dct_id, \n\
+        dcn_acc_id, \n\
+        clt_id clt_id,\n\
+        2 record_type \n\
+       FROM w_cae \n\
+      WHERE dod_percent_vat = 0 \n\
+        AND dod_percent <> 0 \n\
+        AND ImpExento = 0 \n\
+        AND ImpNoGravado = 0 \n\
+    GROUP BY dcn_doc_document_date, \n\
+        dvl_code, \n\
+        dcn_doc_id, \n\
+        doc_id, \n\
+        clt_cuit, \n\
+        clt_identification_type, \n\
+        clt_ident_number, \n\
+        dcn_doc_amount,\n\
+        dod_percent, \n\
+        vat_code,  \n\
+        currency_code, \n\
+        change_type, \n\
+        dcn_doc_due_date, \n\
+        dcn_doc_cmp_id, \n\
+        dcn_doc_letter, \n\
+        dcn_doc_dct_id, \n\
+        dcn_acc_id, \n\
+        clt_id ) \n\
+    UNION ALL /* Agrupa alicuotas de IVA  */ \n\
+    (SELECT /*+ NO_GBY_PUSHDOWN */ \n\
+        dcn_doc_document_date,\n\
+        dvl_code,\n\
+        dcn_doc_id,\n\
+        doc_id,\n\
+        clt_cuit,\n\
+        clt_identification_type,\n\
+        clt_ident_number,\n\
+        dcn_doc_amount, \n\
+        ImpNoGravado,\n\
+        ImpMontoNeto, \n\
+        ImpMontoIva, \n\
+        0 dod_percent,\n\
+        dod_percent_vat, \n\
+        iva_code,  \n\
+        ImpExento,\n\
+        ImpMontoRni,\n\
+        ImpPercepIVA,\n\
+        ImpPercepIIBB,\n\
+        ImpPercepMunicip,\n\
+        ImpIMINT,\n\
+        ImpProd,\n\
+        vat_code, \n\
+        IncVatCode,  \n\
+        currency_code, \n\
+        change_type, \n\
+        dcn_doc_due_date, \n\
+        dcn_doc_cmp_id, \n\
+        dcn_doc_letter, \n\
+        dcn_doc_dct_id, \n\
+        dcn_acc_id, \n\
+        clt_id clt_id, \n\
+        3 record_type \n\
+        FROM (\n\
+            SELECT  dcn_doc_document_date,\n\
+               dvl_code,\n\
+               dcn_doc_id,\n\
+               doc_id,\n\
+               clt_cuit,\n\
+               clt_identification_type,\n\
+               clt_ident_number,\n\
+               dcn_doc_amount, \n\
+               0 ImpNoGravado,\n\
+               ROUND(SUM (ImpMontoNeto), 2) ImpMontoNeto,\n\
+               ROUND(SUM (ImpMontoIva), 2)  ImpMontoIva,\n\
+               0 dod_percent,\n\
+               dod_percent_vat,\n\
+               (dod_percent_vat/100) dod_percent_vat_0, \n\
+               DECODE(dod_percent_vat,0,3,10.5,4,21,5,27,6) iva_code,  \n\
+               0 ImpExento,\n\
+               0 ImpMontoRni,\n\
+               0 ImpPercepIVA,\n\
+               0 ImpPercepIIBB,\n\
+               0 ImpPercepMunicip,\n\
+               0 ImpIMINT,\n\
+               0 ImpProd,\n\
+               vat_code,\n\
+               SUM(IncVatCode) IncVatCode,\n\
+               currency_code, \n\
+               change_type, \n\
+               dcn_doc_due_date, \n\
+               dcn_doc_cmp_id, \n\
+               dcn_doc_letter, \n\
+               dcn_doc_dct_id, \n\
+               dcn_acc_id, \n\
+               clt_id clt_id, \n\
+               3 record_type \n\
+              FROM w_cae\n\
+             WHERE dod_percent_vat > 0\n\
+             GROUP BY dcn_doc_document_date, \n\
+               dvl_code, \n\
+               dcn_doc_id, \n\
+               doc_id, \n\
+               clt_cuit, \n\
+               clt_identification_type, \n\
+               clt_ident_number, \n\
+               dcn_doc_amount,\n\
+               dod_percent_vat,\n\
+               vat_code,\n\
+               currency_code, \n\
+               change_type, \n\
+               dcn_doc_due_date, \n\
+               dcn_doc_cmp_id, \n\
+               dcn_doc_letter, \n\
+               dcn_doc_dct_id, \n\
+               dcn_acc_id, \n\
+               clt_id\n\
+            )\n\
+    ))\n\
+    /* Totales */ \n\
+    (SELECT /*+ NO_GBY_PUSHDOWN */ \n\
+          dcn_doc_document_date,\n\
+          dvl_code,\n\
+          dcn_doc_id,\n\
+          doc_id,\n\
+          clt_cuit,\n\
+          clt_identification_type,\n\
+          clt_ident_number,\n\
+          dcn_doc_amount, \n\
+          ImpNoGravado,\n\
+          ImpMontoNeto,\n\
+          ImpMontoIva,\n\
+          dod_percent,\n\
+          dod_percent_vat,\n\
+          iva_code, \n\
+          ImpExento,\n\
+          ImpMontoRni, \n\
+          ImpPercepIVA,\n\
+          ImpPercepIIBB,\n\
+          ImpPercepMunicip,\n\
+          ImpImint,\n\
+          ImpProd,\n\
+          decode(IncVatCode, 0, 10, vat_code) vat_code,   \n\
+          currency_code,\n\
+          change_type,\n\
+          dcn_doc_due_date,\n\
+          dcn_doc_cmp_id,\n\
+          dcn_doc_letter,\n\
+          dcn_doc_dct_id,\n\
+          dcn_acc_id,\n\
+          clt_id clt_id,\n\
+          record_type\n\
+       FROM ( /* Se obtiene registro de totales */\n\
+            SELECT /*+ NO_GBY_PUSHDOWN */ \n\
+                   dcn_doc_document_date,\n\
+                   dvl_code,\n\
+                   dcn_doc_id,\n\
+                   doc_id,\n\
+                   clt_cuit,\n\
+                   clt_identification_type,\n\
+                   clt_ident_number,\n\
+                   dcn_doc_amount, \n\
+                   ROUND(SUM (ImpNoGravado), 2) ImpNoGravado,\n\
+                   ROUND(SUM (ImpMontoNeto), 2) ImpMontoNeto,\n\
+                   ROUND(SUM (ImpMontoIva), 2)  ImpMontoIva,\n\
+                   0 dod_percent,\n\
+                   0 dod_percent_vat, \n\
+                   0 iva_code, \n\
+                   ROUND(SUM (ImpExento), 2) ImpExento,\n\
+                   ROUND(SUM (ImpMontoRni), 2) ImpMontoRni,\n\
+                   ROUND(SUM (ImpPercepIVA), 2) ImpPercepIVA,\n\
+                   ROUND(SUM (ImpPercepIIBB), 2) ImpPercepIIBB,\n\
+                   ROUND(SUM (ImpPercepMunicip), 2) ImpPercepMunicip,\n\
+                   ROUND(SUM (ImpIMINT), 2) ImpIMINT,\n\
+                   ROUND(SUM (ImpProd), 2) ImpProd,\n\
+                   vat_code,\n\
+                   SUM(IncVatCode) IncVatCode,\n\
+                   currency_code, \n\
+                   change_type, \n\
+                   dcn_doc_due_date, \n\
+                   dcn_doc_cmp_id, \n\
+                   dcn_doc_letter, \n\
+                   dcn_doc_dct_id, \n\
+                   dcn_acc_id, \n\
+                   clt_id clt_id, \n\
+                   1 record_type \n\
+            FROM w_cae_sum \n\
+            GROUP BY dcn_doc_document_date, \n\
+                       dvl_code, \n\
+                       dcn_doc_id, \n\
+                       doc_id, \n\
+                       clt_cuit, \n\
+                       clt_identification_type, \n\
+                       clt_ident_number, \n\
+                       dcn_doc_amount, \n\
+                       vat_code, \n\
+                       currency_code, \n\
+                       change_type, \n\
+                       dcn_doc_due_date, \n\
+                       dcn_doc_cmp_id, \n\
+                       dcn_doc_letter, \n\
+                       dcn_doc_dct_id, \n\
+                       dcn_acc_id, \n\
+                       clt_id ) temp_aux) \n\
+        UNION ALL /* Se obtiene detalle de Alicuotas y Tributos */\n\
+        (SELECT  /*+ NO_GBY_PUSHDOWN */ \n\
+                   dcn_doc_document_date,\n\
+                   dvl_code,\n\
+                   dcn_doc_id,\n\
+                   doc_id,\n\
+                   clt_cuit,\n\
+                   clt_identification_type,\n\
+                   clt_ident_number,\n\
+                   dcn_doc_amount, \n\
+                   ImpNoGravado,\n\
+                   ImpMontoNeto,\n\
+                   ImpMontoIva,\n\
+                   dod_percent,\n\
+                   dod_percent_vat, \n\
+                   iva_code, \n\
+                   ImpExento,\n\
+                   ImpMontoRni,\n\
+                   ImpPercepIVA,\n\
+                   ImpPercepIIBB,\n\
+                   ImpPercepMunicip,\n\
+                   ImpIMINT,\n\
+                   ImpProd,\n\
+                   0, \n\
+                   currency_code, \n\
+                   change_type, \n\
+                   dcn_doc_due_date, \n\
+                   dcn_doc_cmp_id, \n\
+                   dcn_doc_letter, \n\
+                   dcn_doc_dct_id, \n\
+                   dcn_acc_id, \n\
+                   clt_id clt_id,\n\
+                   record_type \n\
+            FROM w_cae_sum\n\
+           WHERE record_type IN (2,3))\n\
+    ORDER BY  dcn_doc_letter, \n\
+       dcn_doc_dct_id, \n\
+       dcn_doc_id, \n\
+       dcn_doc_document_date, \n\
+       record_type, \n\
+       dod_percent DESC,  \n\
+       dod_percent_vat");
+
+    if(debug)
+      fprintf(stderr,"Cursor Principal: %s Length Cursor: [%d]\n", cursor,strlen(cursor));
+}
+
+void show_help(const char *program)
+{
+  fprintf(stdout,"Proceso %s Finalizado con Errores\n", program);
+  fprintf(stderr, "USO: %s -c <compania> -l<letra A (Mayuscula) o B (Mayuscula)> -y <EndDateCorte (YYYYMMDD)> [-r reproceso] [-s secuencia]\n", program);
+  exit(1);
+}
+
+static void AbortaPrograma(void)
+{
+  char     msg[512];
+  size_t   buf_len;
+  size_t   msg_len;
+  
+  switch (sqlca.sqlcode)
+       case -1: return;
+
+  buf_len= sizeof(msg);
+  sqlglm(msg, &buf_len, &msg_len);
+  fprintf(stdout,"Proceso fce_request_cae_number_wsv1 Finalizado con Errores\n");
+  fprintf(stderr,"ABORTA PROGRAMA: Ultima sentencia SQL ejecutada: \n%.*s\n",oraca.orastxt.orastxtl,oraca.orastxt.orastxtc);
+  fprintf(stderr,"%.*s\n",msg_len,msg);
+  fprintf(stderr,"En la linea: %d\n", oraca.oraslnr);
+
+  EXEC SQL WHENEVER SQLERROR CONTINUE;
+  EXEC SQL ROLLBACK WORK RELEASE;
+
+  fclose(datafile);
+  fclose(logdatafile);
+  fclose(statisticfile);
+  exit(1);
+}
+
