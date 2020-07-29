@@ -1,1 +1,1 @@
-*.pc export-subst
+*.pc filter=dater
