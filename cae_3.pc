@@ -1,5 +1,5 @@
 /******************************************************************************
- $Id: 4298c9ca49c6b2f5736e40eaea0ff559df34f7a5 $
+ $Id:$
 
  Claro S.A. - Todos los derechos reservados.
  Copyright (c) 2005-2019
@@ -10,7 +10,4 @@
 
 *******************************************************************************/
 
-#ident  "@(#)PROJECTNAME:FILENAME:$Format:%D:%ci:%cN:%h$"
-// Last commit date: $Format:%cd by %aN$
-// $Date: Anda a cagar $
-
+rcs_idprueba = "$Header$";
