@@ -10,4 +10,4 @@
 
 *******************************************************************************/
 
-rcs_idprueba = "$Header$";
+static char rcsid_fce_request_cae_number[] = "$Header:$";
