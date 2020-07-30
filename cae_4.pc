@@ -10,4 +10,4 @@
 
 *******************************************************************************/
 
-static char rcsid_fce_request_cae_number[] = "$Header: 1090806c032c8df588f49c1eb510ea812fe6cda2 - Rodolfo Sosa, Thu Jul 30 12:25:07 2020 -0300 : prueba 2 :$";
+static char rcsid_fce_request_cae_number[] = "$Header$";
