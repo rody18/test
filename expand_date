@@ -1,4 +1,4 @@
 #!/bin/bash
 data=$1 
-last_date=`git log --pretty=format:"%H - %an, %ad : %s" -1`
+last_date=`git log --pretty=format:"%H - %an, %ad --> %s" -1`
 cat $data | sed "s/\$Header/\$Header: $last_date /g"
