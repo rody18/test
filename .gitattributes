@@ -1,2 +1,2 @@
-*.pc filter=dater
-*.pc ident
+*.pc filter=rcsid
+*.h filter=rcsid

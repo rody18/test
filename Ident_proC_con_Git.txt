@@ -1,0 +1,15 @@
+-- Creación de filtros para colocar ident en fuente
+-- Fuente: https://git-scm.com/book/en/v2/Customizing-Git-Git-Attributes#filters_a
+
+-- Crear filtros para checkout y commit
+git config filter.idcommit.smudge ./smudge_header
+git config filter.idcommit.clean 'perl -pe "s/\\\$Date[^\\\$]*\\\$/\\\$Date\\\$/"'
+
+git config filter.idcommit.clean ./clean_header
+
+-- Listar todos los filtros
+git config --list
+
+-- Borrar configuración
+git config --unset-all filter.dater.smudge
+git config --unset-all filter.dater.clean

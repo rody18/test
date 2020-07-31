@@ -1,0 +1,5 @@
+#!/bin/bash
+data=$1 
+git_smudge=`git log --pretty=format:"%H - %an, %ad : %s" -1`
+cat $data | sed "s/\\\$Header[^\\\$]*\\\$/\\\$Header: $git_smudge \\\$/"
+# "s/\$Header.*\$/\$Header: $last_date \$\"\;/g"

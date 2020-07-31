@@ -1,5 +1,5 @@
 /******************************************************************************
- $Id$
+ $Id: 4653930bc6f2019472c8d22a8330c975c2014a7b $
 
  Claro S.A. - Todos los derechos reservados.
  Copyright (c) 2005-2019
@@ -10,6 +10,6 @@
 
 *******************************************************************************/
 
-static char rcsid_fce_request_cae_number[] = "$Header: be76a50fdfa79d57059ceafe89b65c02d27efbee - Rodolfo Sosa, Thu Jul 30 17:51:00 2020 -0300 : prueba clean 4 :$";
+static char rcsid_fce_request_cae_number[] = "$Header$";
 
 prueba 5

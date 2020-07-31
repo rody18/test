@@ -1,0 +1,5 @@
+#!/bin/bash
+data=$1 
+cat $data | sed "s/\\\$Header[^\\\$]*\\\$/\\\$Header\\\$/"
+# "s/\$Header.*\$/\$Header:\$\"\;/g"
+
