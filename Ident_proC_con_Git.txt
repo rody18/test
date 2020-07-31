@@ -2,14 +2,14 @@
 -- Fuente: https://git-scm.com/book/en/v2/Customizing-Git-Git-Attributes#filters_a
 
 -- Crear filtros para checkout y commit
-git config filter.idcommit.smudge ./smudge_header
-git config filter.idcommit.clean 'perl -pe "s/\\\$Date[^\\\$]*\\\$/\\\$Date\\\$/"'
+git config filter.rcsid.smudge ./smudge_header
+git config filter.rcsid.clean ./clean_header
 
-git config filter.idcommit.clean ./clean_header
+-- Otro ejemplo: git config filter.rcsid.clean 'perl -pe "s/\\\$Header[^\\\$]*\\\$/\\\$Header\\\$/"'
 
 -- Listar todos los filtros
 git config --list
 
 -- Borrar configuración
-git config --unset-all filter.dater.smudge
-git config --unset-all filter.dater.clean
+git config --unset-all filter.rcsid.smudge
+git config --unset-all filter.rcsid.clean
