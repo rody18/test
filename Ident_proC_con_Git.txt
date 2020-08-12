@@ -13,3 +13,6 @@ git config --list
 -- Borrar configuración
 git config --unset-all filter.rcsid.smudge
 git config --unset-all filter.rcsid.clean
+
+-- Dejar LF pero remover CRLF
+git config --global core.autocrlf input
